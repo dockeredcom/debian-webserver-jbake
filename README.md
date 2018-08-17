@@ -75,7 +75,7 @@ There are 2 important things to keep in mind when you run this container:
 
 
 ```
-docker run --rm -t -d -p 80:80 --env-file /full-path-to/your-envionment-file.properites --name jbake1 dockeredcom/debian-webserver-jbake /srv/script/start.sh
+docker run --rm -t -d -p 80:80 --env-file /full-path-to/your-envionment-file.properties --name jbake1 dockeredcom/debian-webserver-jbake /srv/script/start.sh
 ```
 
 # Support

@@ -1,0 +1,13 @@
+# Hidden gradle directory
+
+.gradle/
+
+# For IntelliJ
+
+*.iml
+*.ipr
+*.iws
+
+# The secret files containing the environment settings (including passwords) that should never be in GIT.
+
+*.secret

@@ -13,7 +13,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 ENV GIT_USER=git
 ENV GIT_PASSWORD=password
-ENV GIT_REPO=http://git.server.net/repo.git
+ENV GIT_PROTOCOL=http
+ENV GIT_REPO=git.server.net/repo.git
 ENV GIT_BRANCH=master
 ENV GIT_SSLVERIFY=true
 ENV JBAKE_SOURCE=.

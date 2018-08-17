@@ -24,7 +24,7 @@ git config --global http.sslverify $GIT_SSLVERIFY
 
 if [ ! -d "/srv/jbake" ]; then
     mkdir -p /srv/jbake
-    git clone https://$GIT_USER:"$GIT_PASSWORD"@$GIT_REPO /srv/jbake
+    git clone $GIT_PROTOCOL://$GIT_USER:"$GIT_PASSWORD"@$GIT_REPO /srv/jbake
 fi
 
 # Make sure we have the correct branch and the latest source.

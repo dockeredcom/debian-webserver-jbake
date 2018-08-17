@@ -1,0 +1,701 @@
+/**********************************************************************************************************************
+*                                                                                                                      *
+*   DOCKER GRADLE PLUGIN                                                                                               *
+*                                                                                                                      *
+*   This gradle file contains the tasks needed to build and run a docker image. In the future,                         *
+*   this will become a specific gradle plugin, but for now, code is separated into this file for                       *
+*   a cleaner build.gradle.                                                                                            *
+*                                                                                                                      *
+*   for Mac and Linux only for now                                                                                     *
+*   on Windows, try Cygwin or something alike to have a real bash shell but it has not been tested (yet)               *
+*                                                                                                                      *
+*   Version 1.1.0                                                                                                      *
+*   Yves Vindevogel                                                                                                    *
+*   2018-08-16                                                                                                         *
+*                                                                                                                      *
+*   For full history of this file, see CHANGELOG-docker.md                                                             *
+*                                                                                                                      *
+ **********************************************************************************************************************/
+
+/*
+*
+* Settings.
+*
+ */
+
+final String DEFAULT_TAG = "build"
+final File BUILD_DIRECTORY = new File("${rootDir}/build")
+final File SOURCE_DIRECTORY = new File("${rootDir}/src/main/docker")
+final File RESOURCES_DIRECTORY = new File("${rootDir}/src/main/resources")
+final File SOURCE_DOCKERFILE = new File("${SOURCE_DIRECTORY.absolutePath}/Dockerfile")
+final File BUILD_DOCKERFILE = new File("${BUILD_DIRECTORY.absolutePath}/Dockerfile")
+
+final String[] BASE_DIRECTORIES = ["src/main/docker", "src/main/resources", "src/test", "build"]
+final String[] BASE_FILES = ["src/main/docker/Dockerfile", ".gitignore"]
+
+final String[] SHELL_COMMAND = ["/bin/bash", "-c"]
+
+// For usage with "gradle tasks"
+final String gradleGroup = "Docker"
+
+/***
+*
+* Tasks.
+*
+ ***/
+
+/*
+*
+* The cleanImage task removes the image from the local docker images.
+*
+ */
+
+task cleanImage() {
+    group = gradleGroup
+    description = "Removes the image"
+
+    doLast {
+        // Default
+        String tag = DEFAULT_TAG
+
+        // Override possible by passing -Ptag=XYZ
+        if (project.hasProperty("tag")) {
+            tag = project.property("tag")
+        }
+
+        if (countImages(project.ext.docker.repository, project.ext.docker.image, tag) == 0) {
+            logger.log LogLevel.WARN, "No images found"
+            return
+        }
+
+        logger.info "Cleaning image(s)"
+        logger.info "Repository: ${project.ext.docker.repository}"
+        logger.info "Image: ${project.ext.docker.image}"
+        logger.info "Tag: ${tag}"
+
+        //noinspection GroovyAssignabilityCheck
+        removeImage project.ext.docker.repository, project.ext.docker.image, tag
+
+        logger.quiet "Image(s) cleaned (removed)"
+    }
+}
+
+/*
+*
+* The cleanContainer task removes the container from the local docker containers with force.
+*
+ */
+
+task cleanContainer() {
+    group = gradleGroup
+    description = "Removes the container"
+
+    doLast {
+        // Default
+        String container = project.ext.docker.container
+
+        // Override possible by passing -Pcontainer=name
+        if (project.hasProperty("container")) {
+            container = project.property("container")
+        }
+
+        if (!containerExists(container)) {
+            logger.log LogLevel.WARN, "No containers found"
+            return
+        }
+
+        logger.info "Cleaning container"
+        logger.info "Container: ${container}"
+
+        removeContainer container
+
+        logger.quiet "Container cleaned (removed - if it existed)"
+    }
+}
+
+/*
+*
+* The cleanBuild task removes the local build directory.
+*
+ */
+
+task cleanBuild() {
+    group = gradleGroup
+    description = "Removes the build directory"
+
+    doLast {
+        logger.info "Cleaning build directory"
+
+        BUILD_DIRECTORY.deleteDir()
+
+        logger.quiet "Build directory cleaned (removed)"
+    }
+}
+
+/*
+*
+* The clean task executes cleanImage, cleanContainer and cleanBuild.
+*
+ */
+
+task clean() {
+    group = gradleGroup
+    description = "Removes the image and the container, plus the build directory"
+}
+
+clean.dependsOn cleanImage
+clean.dependsOn cleanContainer
+clean.dependsOn cleanBuild
+
+/*
+*
+* The cleanSystem task removes as much as possible traces of docker on the
+* complete system.
+*
+* WARNING: USE WITH CARE.
+*
+ */
+
+task cleanSystem() {
+    group = gradleGroup
+    description = "Performs a system prune"
+
+    doLast {
+        logger.info "Cleaning the system"
+
+        cleanSystem()
+
+        logger.quiet "System cleaned"
+    }
+}
+
+/*
+*
+* The optimize task optimizes the Dockerfile in src/main/docker by grouping RUN commands. Each RUN command makes a layer
+* in the docker image, resulting in a lot of overhead. The optimized file is put in the build directory.
+*
+ */
+
+task optimize {
+    group = gradleGroup
+    description = "Optimizes the Dockerfile into the build directory"
+
+    doLast {
+        logger.info "Optimizing source Dockerfile"
+
+        optimize SOURCE_DOCKERFILE, BUILD_DOCKERFILE
+
+        logger.quiet "${BUILD_DOCKERFILE.absolutePath} created"
+    }
+}
+
+/*
+*
+* The copyResources task copies all files from src/main/resources to the build directory.
+*
+ */
+
+task copyResources {
+    group = gradleGroup
+    description = "Copies all resources to the build directory"
+
+    doLast {
+        logger.info "Copying resources"
+
+        project.copy {
+            from RESOURCES_DIRECTORY.absolutePath
+            into BUILD_DIRECTORY.absolutePath
+        }
+
+        logger.quiet "Resources copied"
+    }
+}
+
+/*
+*
+* The build task builds the image.
+*
+* If no tag was given, it uses "build" as tag. This is related to the GitLab setup used. All pushes to the server
+* must be done to specific branches. develop is a protected branch. The code in the specific branch will be merged into
+* develop with a formal merge request in GitLab. So basically, when building from the develop, release or master branch,
+* the tag will be given accordingly. But for local builds during development, "build" is the default.
+*
+* The parameters needed are given in the build.gradle file.
+*
+ */
+
+task build {
+    group = gradleGroup
+    description = "Builds the image"
+
+    doLast {
+        String tag = DEFAULT_TAG
+
+        if (project.hasProperty("tag")) {
+            tag = project.property("tag")
+        }
+
+        Map args = project.ext.docker.args
+
+        logger.info "Building image"
+        logger.info "Repository: ${project.ext.docker.repository}"
+        logger.info "Image: ${project.ext.docker.image}"
+        logger.info "Tag: ${tag}"
+        logger.info "Source file: ${BUILD_DOCKERFILE.absolutePath}"
+        logger.info "Arguments: ${args}"
+
+        //noinspection GroovyAssignabilityCheck
+        buildImage project.ext.docker.repository, project.ext.docker.image, tag, BUILD_DOCKERFILE, BUILD_DIRECTORY, args
+
+        logger.quiet "Image built"
+    }
+}
+
+build.dependsOn optimize
+build.dependsOn copyResources
+
+/*
+*
+* The compile task builds the image, similar to the build task. But without optimize.
+* This is very useful when developing an image. As it copies the raw Dockerfile to the build directory,
+* each RUN command in the Dockerfile will create a new layer. So if you have an error, somewhere down the script,
+* Docker will not need to execute the first tasks again as it will see this layer already exists. This speeds up
+* development and when the image works, you can switch from the compile task to build task to optimize your layers.
+*
+ */
+
+task compile {
+    group = gradleGroup
+    description = "Compiles the image"
+
+    doLast {
+        project.copy {
+            from SOURCE_DIRECTORY.absolutePath
+            into BUILD_DIRECTORY.absolutePath
+        }
+
+        String tag = DEFAULT_TAG
+
+        if (project.hasProperty("tag")) {
+            tag = project.property("tag")
+        }
+
+        Map args = project.ext.docker.args
+
+        logger.info "Compiling image"
+        logger.info "Repository: ${project.ext.docker.repository}"
+        logger.info "Image: ${project.ext.docker.image}"
+        logger.info "Tag: ${tag}"
+        logger.info "Source file: ${BUILD_DOCKERFILE.absolutePath}"
+        logger.info "Arguments: ${args}"
+
+        //noinspection GroovyAssignabilityCheck
+        buildImage project.ext.docker.repository, project.ext.docker.image, tag, BUILD_DOCKERFILE, BUILD_DIRECTORY, args
+
+        logger.quiet "Image compiled"
+    }
+}
+
+compile.dependsOn copyResources
+
+/*
+*
+* The run task starts a container based on the image.
+*
+* If no tag was given, it uses "build" as tag. (see task build)
+* Parameters are set in the build.gradle file.
+*
+ */
+
+task start {
+    group = gradleGroup
+    description = "Starts a container based on the image"
+
+    doLast {
+        String container = project.ext.docker.container
+        String[] ports = project.ext.docker.ports
+        String[] volumes = project.ext.docker.volumes
+        String environmentFile = project.ext.docker.env
+        String[] environmentVars = project.ext.docker.envs
+        String run = project.ext.docker.run
+
+        if (project.hasProperty("container")) {
+            container = project.property("container")
+        }
+
+        // removeContainer will check if it exists, and if so, remove it
+        // However, it will also send a warning if it does not exist.
+        // So, checking first if it exists.
+        if (containerExists(container)) {
+            logger.log LogLevel.WARN, "Container already exists, removing first"
+
+            removeContainer container
+        }
+
+        String tag = DEFAULT_TAG
+
+        if (project.hasProperty("tag")) {
+            tag = project.property("tag")
+        }
+
+        logger.info "\nStarting container"
+        logger.info "Container: ${container}"
+        logger.info "Repository: ${project.ext.docker.repository}"
+        logger.info "Image: ${project.ext.docker.image}"
+        logger.info "Tag: ${tag}"
+        logger.info "Ports: ${ports}"
+        logger.info "Volumes: ${volumes}"
+        logger.info "Environment file: ${environmentFile}"
+        logger.info "Environment variables: ${environmentVars}"
+        logger.info "Run command: ${run}"
+
+        //noinspection GroovyAssignabilityCheck
+        startContainer container, project.ext.docker.repository, project.ext.docker.image, tag, ports,
+                volumes, environmentFile, environmentVars, run
+
+        logger.quiet "\nContainer started"
+    }
+}
+
+/*
+*
+* The stop task stops the running container based on the image.
+*
+* Parameters are set in the build.gradle file.
+*
+ */
+
+task stop {
+    group = gradleGroup
+    description = "Stops the container"
+
+    doLast {
+        String container = project.ext.docker.container
+
+        if (project.hasProperty("container")) {
+            container = project.property("container")
+        }
+
+        if (!containerExists(container)) {
+            logger.log LogLevel.WARN, "No container found"
+            return
+        }
+
+        logger.info "\nStopping container"
+        logger.info "Container: ${container}"
+
+        stopContainer container
+
+        logger.quiet "\nContainer stopped (if it existed)"
+    }
+}
+
+/***
+*
+* Functions that need to be called from outside this file also.
+*
+ ***/
+
+/*
+*
+* The initDirectories method can be used in the build.gradle file to automatically create the base directory structure
+* used in this project.
+*
+ */
+
+ext.initDirectories = {
+    BASE_DIRECTORIES.each { baseDirName ->
+        def baseDir = new File("${rootDir}/${baseDirName}")
+
+        if (!baseDir.exists()) {
+            baseDir.mkdirs()
+        }
+    }
+
+    BASE_FILES.each { baseFileName ->
+        def baseFile = new File("${rootDir}/${baseFileName}")
+
+        if (!baseFile.exists()) {
+            baseFile << " "
+        }
+    }
+}
+
+/*
+*
+* Execute a bash shell command, with no regards of the output.
+*
+ */
+
+ext.runCommand = { String cmd ->
+    def execCmd = SHELL_COMMAND
+    execCmd += cmd
+
+    project.exec {
+        commandLine = execCmd
+    }
+}
+
+/*
+*
+* Execute a bash shell command and capture the output into a return.
+*
+ */
+
+ext.getCommandResult = { String cmd ->
+    def out = new ByteArrayOutputStream()
+    def execCmd = SHELL_COMMAND
+    execCmd += cmd
+
+    project.exec {
+        commandLine = execCmd
+        standardOutput = out
+    }
+
+    return out.toString()
+}
+
+/***
+*
+* The below functions are supporting functions and are called by the tasks.
+* Tasks should not execute commands but call a function instead.
+*
+ ***/
+
+/*
+*
+* Count the existing images in the local docker setup.
+*
+ */
+
+def countImages(String repository, String image, String tag) {
+    String cmd = "docker images ${repository}/${image}:${tag} --format '{{.ID}}' | wc -l"
+
+    return project.ext.getCommandResult(cmd).toInteger()
+}
+
+/*
+*
+* Build an image from an optimized Dockerfile source.
+*
+ */
+
+def buildImage(String repository, String image, String tag, File sourceFile, File sourceDir, Map arguments) {
+    String cmd = "docker build -t ${repository}/${image}:${tag} -f ${sourceFile.absolutePath} ${sourceDir}"
+
+    arguments.each { argument ->
+        cmd += " --build-arg ${argument.key}=${argument.value}"
+    }
+
+    project.ext.runCommand cmd
+}
+
+/*
+*
+* Checks if an image exists and if so, removes it from the local docker setup.
+*
+ */
+
+def removeImage(String repository, String image, String tag) {
+    if (countImages(repository, image, tag) > 0) {
+        String cmd = "docker rmi -f ${repository}/${image}:${tag}"
+
+        project.ext.runCommand cmd
+    } else {
+        logger.log LogLevel.WARN, "No image(s) found"
+    }
+}
+
+/*
+*
+* Checks if a container (not image!) exists on the local docker environment.
+*
+* This is a supporting function called in several tasks.
+*
+ */
+
+def containerExists(String container) {
+    String cmd = "docker container ls -a --format '{{.Names}}' | grep -w ${container} | wc -l"
+
+    return project.ext.getCommandResult(cmd).toInteger() > 0
+}
+
+/*
+*
+* Start a container by name if it does not yet exist.
+*
+ */
+
+def startContainer(String container, String repository, String image, String tag, String[] ports, String[] volumes,
+                   String environmentFile, String[] environmentVars,  String run) {
+    if (countImages(repository, image, tag) == 0) {
+        def message = "Cannot find an image with for this container: " +
+                "repo: ${repository} - image: ${image} - tag: ${tag}"
+
+        throw new Exception(message)
+    }
+
+    if (containerExists(container)) {
+        def message = "A container already exists with name: ${container}"
+
+        throw new Exception(message)
+    }
+
+    // TODO: see why --rm is not functioning with the IntelliJ docker plugin
+
+    String cmd = "docker run --rm -t -d"
+
+    ports.each { port ->
+        cmd += " -p ${port} "
+    }
+
+    volumes.each { volume ->
+        cmd += " -v ${volume} "
+    }
+
+    if (environmentFile != null) {
+        cmd += " --env-file ${environmentFile}"
+    }
+
+    environmentVars.each { env ->
+        cmd += " --env ${env}"
+    }
+
+    cmd += " --name ${container} ${repository}/${image}:${tag}"
+
+    if (run != null) {
+        cmd += " ${run}"
+    } else {
+        cmd += " /bin/bash"
+    }
+
+    logger.quiet "Starting container with: ${cmd}"
+
+    project.ext.runCommand cmd
+}
+
+/*
+*
+* Stop a container by name if it exists.
+*
+ */
+
+def stopContainer(String container) {
+    if (containerExists(container)) {
+        String cmd = "docker stop ${container}"
+
+        project.ext.runCommand cmd
+    } else {
+        logger.log LogLevel.WARN,  "Container does not exist"
+    }
+}
+
+/*
+*
+* Removes a container by name if it exists (with or without force).
+*
+ */
+
+def removeContainer(String container, Boolean force = true) {
+    if (containerExists(container)) {
+        String cmd = "docker rm ${force ? "-f" : ""} ${container}"
+
+        project.ext.runCommand cmd
+    } else {
+        logger.log LogLevel.WARN, "Container does not exist"
+    }
+}
+
+/*
+*
+* Really clean the system.
+*
+ */
+
+def cleanSystem() {
+    String cmd = "yes | docker system prune"
+
+    project.ext.runCommand cmd
+}
+
+/*
+*
+* This method optimizes a Dockerfile by putting together RUN commands, which is very important for the number of layers
+* you have in your image. It also removes the comments and blank lines.
+*
+ */
+
+static optimize(File srcFile, File targetFile) {
+    try {
+        def previousCommand = ""
+        def content = ""
+        def nextLineContinued = false
+        def nextCommandContinued = false
+        def command = ""
+
+        srcFile.eachLine {
+            def line = it.trim()
+
+            // Skip empty lines and comment lines
+            if (line.length() > 0 && line.substring(0, 1) != "#") {
+                if (nextLineContinued) {
+                    def extraSpaces = nextCommandContinued ? 0 : 4
+
+                    content += "\n${' ' * (command.length() + extraSpaces)} ${line.trim()}"
+                } else {
+                    command = line.split(" ")[0].toUpperCase()
+
+                    // Adding the set -x by default
+                    if (command == "RUN") {
+                        if (previousCommand != "RUN") {
+                            content += ("\nRUN set -x")
+                        }
+
+                        content += " && \\ \n    ${line.substring(4).trim()}"
+                    } else {
+                        if (previousCommand == "RUN") {
+                            content += "\n"
+                        }
+
+                        if (previousCommand != command && previousCommand != "") {
+                            content += "\n"
+                        }
+
+                        content += "${command.toUpperCase()} ${line.substring(command.length() + 1).trim()}\n"
+                    }
+                }
+
+                previousCommand = command
+                nextLineContinued = line.endsWith("\\")
+                nextCommandContinued = line.replaceAll(' ', '').endsWith("&&\\")
+            } else {
+                // Yves Vindevogel
+                // 2018-08-14
+                // The below line makes absolutely no sense, but, if the line is not there, IntelliJ complains
+                // that not all paths are returning a value.  Which is logical when you would look at the code.
+                // You would have several lines of 'text', all without a single character.  So just a bunch of line
+                // breaks only, or just comment lines.
+                // I decided to write the line anyway, as I like the GroovyInspector to show me all is valid
+                //
+                // Not all execution paths return a value less... (⌘F1)
+                // This inspection reports on missing Groovy return statement at the end of methods returning
+                // Powered by InspectorGroovy
+
+                content += ""
+            }
+        }
+
+        if (targetFile.exists()) {
+          targetFile.delete()
+        }
+
+        targetFile << content
+
+    } catch (Exception e) {
+        String message = "Could not parse the code, " +
+                "please check the code with docker build first to verify it does not throw an exception." +
+                "\n\nException found: ${e.toString()}"
+
+        throw new Exception(message)
+    }
+}

@@ -1,0 +1,15 @@
+/*
+*
+*   Version 1.0.0
+*
+ */
+
+def idea = false
+
+if (project.hasProperty("idea")) {
+  idea = project.property("idea").toBoolean()
+}
+
+if (idea) {
+  apply plugin: "idea"
+}

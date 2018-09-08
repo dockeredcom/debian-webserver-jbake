@@ -1,10 +1,17 @@
 # Current versions
 
-- develop: 1.0.0
-- release (candidate): not released yet
-- master: not released yet
+- develop: 1.0.1
+- release 1.0.1
+- master: 1.0.1
 
 # History
+
+## Version 1.0.1
+
+- Author: Yves Vindevogel
+- Date: 2018-09-07
+
+Added the script as ENTRYPOINT, as you could override the start too easily
 
 ## Version 1.0.0
 

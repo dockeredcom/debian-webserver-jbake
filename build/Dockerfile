@@ -41,4 +41,6 @@ RUN set -x && \
 
 EXPOSE 80
 
-CMD ["/srv/script/start.sh"]
+ENTRYPOINT ["/srv/script/start.sh"]
+
+CMD ["/bin/bash"]

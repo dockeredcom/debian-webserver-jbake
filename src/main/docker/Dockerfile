@@ -1,4 +1,4 @@
-# Version 1.0.0
+# Version 1.0.1
 
 FROM dockeredcom/debian-oraclejdk:latest
 
@@ -106,4 +106,6 @@ EXPOSE 80
 # Basically, you don't need the /bin/bash to keep the container running.
 # Nginx is running and keeping the container alive.
 
-CMD ["/srv/script/start.sh"]
+ENTRYPOINT ["/srv/script/start.sh"]
+
+CMD ["/bin/bash"]
